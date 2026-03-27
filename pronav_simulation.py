@@ -16,10 +16,10 @@
   1 / 2          — Đổi chế độ di chuyển mục tiêu (thẳng / cơ động)
   +/- (KP)       — Tăng / Giảm vận tốc missile
   [ / ]          — Giảm / Tăng vận tốc target
-  Q / E          — Giảm / Tăng vận tốc missile theo X
-  A / D          — Giảm / Tăng vận tốc target theo X
-  W / S          — Giảm / Tăng vận tốc missile theo Z (cao độ)
-  Z / X_KEY      — Giảm / Tăng vận tốc target theo Z (cao độ)
+  W / S          — Tăng / Giảm vận tốc target theo X (Tiến/Lùi)
+  A / D          — Tăng / Giảm vận tốc target theo Y (Phải/Trái)
+  Q / E          — Giảm / Tăng vận tốc target theo Z (Xuống/Lên)
+  Chuột Trái     — Xoay Camera 3D
 """
 
 import pygame
@@ -39,7 +39,7 @@ from typing import List
 
 # ── Tốc độ & gia tốc ───────────────────────────────────────────────
 TARGET_SPEED = 2      # m/s  (0 = target đứng yên)
-TARGET_ACCEL_MAX = 1      # m/s² (giới hạn gia tốc cơ động)
+TARGET_ACCEL_MAX = TARGET_SPEED * 2      # m/s² (giới hạn gia tốc cơ động)
 MISSILE_SPEED = 15     # m/s
 MISSILE_ACCEL_MAX = 2     # m/s²
 
@@ -50,25 +50,25 @@ DISTANCE_TO_TARGET_Z = 500 # m
 
 # ── Vị trí xuất phát (mét) ───────────────────────────────────────────
 
-TARGET_START_X    =  0   # m
+TARGET_START_X    =  0   # m (Gốc tọa độ)
 TARGET_START_Y    =  0   # m
-TARGET_START_Z    =   0   # m  (cao độ xuất phát)
+TARGET_START_Z    =  0   # m (Z > 0 là lên trên)
 
-MISSILE_START_X   = TARGET_START_X - DISTANCE_TO_TARGET_X   # m
-MISSILE_START_Y   = TARGET_START_Y - DISTANCE_TO_TARGET_Y   # m
-MISSILE_START_Z   = TARGET_START_Z - DISTANCE_TO_TARGET_Z   # m  (cao độ xuất phát)
+MISSILE_START_X   = DISTANCE_TO_TARGET_X   # m 
+MISSILE_START_Y   = DISTANCE_TO_TARGET_Y   # m 
+MISSILE_START_Z   = DISTANCE_TO_TARGET_Z   # m 
 
  
 
 # ── Hướng bay ban đầu mục tiêu (được normalize tự động) ───────────────
 TARGET_VEL_DIR_X  = -1.0
 TARGET_VEL_DIR_Y  = -0.8
-TARGET_VEL_DIR_Z  = -0.05
+TARGET_VEL_DIR_Z  = 0.0
 
 # ── Tham số dẫn đường & cơ động ───────────────────────────────────
 NAV_GAIN          = 4.0     # hệ số ProNAV (thường 3–5)
 NAV_GAIN_MAX      = 12.0    # giới hạn tăng nav gain
-VC_FIXED          = 15     # m/s — Vận tốc đóng cố định (thay cho phản hồi tốc độ mục tiêu)
+NAV_AUG_GAIN      = 0.5     # hệ số bù gia tốc mục tiêu (Augmented PN)
 TARGET_MODE_INIT  = 1       # 1 = bay thẳng,  2 = cơ động (evasive)
 MANEUVER_PERIOD   = 2.0     # s  — chu kỳ cơ động
 INTERCEPT_RADIUS  = 1.0    # m  — bán kính tính là đánh chặn
@@ -106,7 +106,7 @@ C_PLANE_XY      = (60,  180, 120)   # màu khung XY
 C_PLANE_XZ      = (180, 100, 220)   # màu khung XZ
 C_PLANE_YZ      = (220, 160,  50)   # màu khung YZ
 
-TRAIL_LEN        = 600   # số điểm lưu quỹ đạo (tăng lên để trail dài hơn)
+TRAIL_LEN        = 6000   # số điểm lưu quỹ đạo (tăng lên để trail dài hơn)
 HISTORY_MAX      = 1800  # số snapshot tối đa (~30s ở 60fps)
 SNAPSHOT_EVERY   = 2     # lưu snapshot mỗi N frame (giảm xuống để scrub mịn hơn)
 SCRUB_STEP       = 1     # ← → : 1 frame (xem từng khung hình)
@@ -173,21 +173,29 @@ class Vector3D:
 # ─────────────────────────────────────────────────────────────────────────────
 class Camera:
     def __init__(self, cx, cy, scale=0.45,
-                 angle_x=math.radians(30), angle_y=math.radians(45)):
-        self.cx      = cx
-        self.cy      = cy
-        self.scale   = scale
-        self.angle_x = angle_x
-        self.angle_y = angle_y
-        self._cos_y = math.cos(angle_y)
-        self._sin_y = math.sin(angle_y)
-        self._cos_x = math.cos(angle_x)
-        self._sin_x = math.sin(angle_x)
+                 yaw=math.radians(40), pitch=math.radians(28)):
+        self.cx    = cx
+        self.cy    = cy
+        self.scale = scale
+        self.set_angles(yaw, pitch)
+
+    def set_angles(self, yaw, pitch):
+        self.yaw   = yaw
+        # Clamp pitch to prevent flipping (e.g. -85 to 85 degrees)
+        self.pitch = max(-math.radians(88), min(math.radians(88), pitch))
+        
+        self._cos_y = math.cos(self.yaw)
+        self._sin_y = math.sin(self.yaw)
+        self._cos_x = math.cos(self.pitch)
+        self._sin_x = math.sin(self.pitch)
 
     def project(self, v: Vector3D) -> tuple:
+        # Rotation around Z (yaw)
         rx = v.x * self._cos_y - v.y * self._sin_y
         ry = v.x * self._sin_y + v.y * self._cos_y
+        # Rotation around X' (pitch)
         rz = v.z * self._cos_x - ry * self._sin_x
+        # 2D Screen Mapping
         sx = int(self.cx + rx  * self.scale)
         sy = int(self.cy - rz  * self.scale)
         return sx, sy
@@ -413,6 +421,9 @@ class Target:
         current_speed = self.vel.norm()
         if current_speed > 1e-6:
             self.vel = self.vel.normalized() * self.speed
+        elif self.speed > 1e-6:
+            # Nếu mục tiêu đứng yên nhưng speed > 0, cho nó bay theo hướng X+ (Forward) mặc định
+            self.vel = Vector3D(1.0, 0.0, 0.0) * self.speed
 
         self.pos = self.pos + self.vel * dt
         self.trail.append(self.pos.copy())
@@ -430,17 +441,21 @@ class Target:
 class Missile:
     def __init__(self, pos: Vector3D, speed: float = MISSILE_SPEED,
                  nav_gain: float = NAV_GAIN,
+                 nav_aug_gain: float = NAV_AUG_GAIN,
                  max_accel: float = MISSILE_ACCEL_MAX,
                  intercept_radius: float = INTERCEPT_RADIUS):
         self.pos_0     = pos.copy()
         self.pos       = pos.copy()
         self.speed     = speed
         self.nav_gain  = nav_gain
+        self.nav_aug_gain = nav_aug_gain
         self.max_accel = max_accel
         self.vel       = Vector3D()
         self._vel_0    = Vector3D()
         self._prev_los = Vector3D()
         self._accel    = Vector3D()
+        self.g_load    = 0.0
+        self.Vc        = 0.0
         self.active          = False
         self.intercepted     = False
         self.trail:      deque = deque(maxlen=TRAIL_LEN)
@@ -464,6 +479,8 @@ class Missile:
         self.vel        = Vector3D()
         self._prev_los  = Vector3D()
         self._accel     = Vector3D()
+        self.g_load     = 0.0
+        self.Vc         = 0.0
         self.active     = False
         self.intercepted = False
         self.trail      = deque(maxlen=TRAIL_LEN)
@@ -485,23 +502,28 @@ class Missile:
 
         r_hat = r_vec / r
         v_rel = target.vel - self.vel
+        
+        # closing velocity Vc = - d/dt (range) = - (r_vec . v_rel) / r
+        self.Vc = -(r_vec.dot(v_rel)) / (r + 1e-6)
+        # Nếu Vc < 0 (missile đang bay xa hơn), ta vẫn dùng giá trị nhỏ để duy trì dẫn đường
+        # nhưng kẹp tối thiểu để tránh số ảo hoặc mất lái hoàn toàn.
+        Vc_active = max(self.Vc, 0.1)
 
-        # Sử dụng vận tốc đóng cố định từ PARAMETERS thay vì tính toán từ v_rel
-        Vc = VC_FIXED
-
-        # LOS rate
+        # LOS rate vector: omega = (r x v_rel) / (r^2)
         lambda_dot = r_vec.cross(v_rel) / (r * r + 1e-6)
 
         # ── PURE PN ─────────────────
-        a_pn = lambda_dot.cross(r_hat) * (self.nav_gain * Vc)
+        # a_pn = N * Vc * omega x r_hat
+        a_pn = lambda_dot.cross(r_hat) * (self.nav_gain * Vc_active)
 
         # ── TARGET ACCEL (APN augmented) ──────
         a_target      = target._accel
         a_target_perp = a_target - r_hat * a_target.dot(r_hat)
-        a_cmd = a_pn + 1.0 * a_target_perp   # k_aug = 1.0
+        a_cmd = a_pn + self.nav_aug_gain * (self.nav_gain / 2.0) * a_target_perp
 
-        # Lateral constraint
-        v_hat = self.vel.normalized()
+        # Lateral constraint (gia tốc vuông góc với vận tốc tên lửa)
+        v_mag = self.vel.norm()
+        v_hat = self.vel / v_mag if v_mag > 1e-6 else Vector3D()
         a_cmd = a_cmd - v_hat * a_cmd.dot(v_hat)
 
         # Clamp gia tốc
@@ -510,6 +532,7 @@ class Missile:
             a_cmd = a_cmd * (self.max_accel / a_mag)
 
         self._accel = a_cmd
+        self.g_load = a_mag / 9.81
 
         # Tich phân
         self.vel = self.vel + a_cmd * dt
@@ -538,9 +561,11 @@ class Snapshot:
     m_pos:   "Vector3D"
     m_vel:   "Vector3D"
     m_accel: "Vector3D"
+    m_g_load: float
     m_active:      bool
     m_intercepted: bool
     m_trail: list   # list[Vector3D]
+    m_Vc: float
 
     # Target
     t_pos:   "Vector3D"
@@ -573,8 +598,12 @@ class Simulation:
         # Camera (chỉ cho cửa sổ 3D bên trái)
         self.camera = Camera(cx=MAIN_W//2, cy=MAIN_H//2 + 50,
                              scale=0.11,
-                             angle_x=math.radians(28),
-                             angle_y=math.radians(40))
+                             yaw=math.radians(40),
+                             pitch=math.radians(28))
+
+        # Mouse Interaction for 3D Orbit Camera
+        self._dragging_cam  = False
+        self._last_mouse_pos = (0, 0)
 
         # Surface tạm dùng chung cho trail — tránh alloc mỗi frame
         self._trail_surf = pygame.Surface((MAIN_W, HEIGHT), pygame.SRCALPHA)
@@ -613,6 +642,7 @@ class Simulation:
         self.missile_speed = float(MISSILE_SPEED)
         self.target_speed  = float(TARGET_SPEED)
         self.max_accel     = float(MISSILE_ACCEL_MAX)
+        self.nav_aug_gain  = float(NAV_AUG_GAIN)
         self.time_scale    = 1.0
 
         # Hướng vận tốc target — lấy từ PARAMETERS
@@ -632,9 +662,7 @@ class Simulation:
         self._frame_counter: int = 0         # đếm frame để snapshot
 
         self._build_objects()
-
-        # Tạo cache surfaces sau khi camera đã sẵn sàng
-        self._build_cached_surfaces()
+        # Lưới hiện tại được vẽ trực tiếp trong _draw_grid (dynamic)
 
     def _build_objects(self):
         # Vị trí xuất phát được đọc từ PARAMETERS mỗi lần reset
@@ -656,6 +684,7 @@ class Simulation:
             pos              = missile_start,
             speed            = self.missile_speed,
             nav_gain         = self.nav_gain,
+            nav_aug_gain     = self.nav_aug_gain,
             max_accel        = self.max_accel,
             intercept_radius = float(INTERCEPT_RADIUS),
         )
@@ -680,9 +709,11 @@ class Simulation:
             m_pos        = self.missile.pos.copy(),
             m_vel        = self.missile.vel.copy(),
             m_accel      = self.missile._accel.copy(),
+            m_g_load     = self.missile.g_load,
             m_active     = self.missile.active,
             m_intercepted= self.missile.intercepted,
             m_trail      = list(self.missile.trail),   # deque → list copy
+            m_Vc         = self.missile.Vc,
             t_pos        = self.target.pos.copy(),
             t_vel        = self.target.vel.copy(),
             t_accel      = self.target._accel.copy(),
@@ -704,10 +735,12 @@ class Simulation:
         self.missile.pos        = snap.m_pos.copy()
         self.missile.vel        = snap.m_vel.copy()
         self.missile._accel     = snap.m_accel.copy()
+        self.missile.g_load     = snap.m_g_load
         self.missile.active     = snap.m_active
         self.missile.intercepted= snap.m_intercepted
         # BUG FIX: restore trail dưới dạng deque đúng kiểu
         self.missile.trail      = deque((v.copy() for v in snap.m_trail), maxlen=TRAIL_LEN)
+        self.missile.Vc         = snap.m_Vc
         self.target.pos         = snap.t_pos.copy()
         self.target.vel         = snap.t_vel.copy()
         self.target._accel      = snap.t_accel.copy()
@@ -815,53 +848,64 @@ class Simulation:
                 # Target velocity components (Q/E/A/D/W/S)
                 # Q/E: Up/Down (Z)
                 elif k == pygame.K_q:
-                    cur = self.target.vel.normalized()
-                    cur.z -= 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.z -= 0.5
+                    self.target.speed = self.target.vel.norm()
                 elif k == pygame.K_e:
-                    cur = self.target.vel.normalized()
-                    cur.z += 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.z += 0.5
+                    self.target.speed = self.target.vel.norm()
 
-                # A/D: Left/Right (X)
+                # A/D: Right(+Y)/Left(-Y)
                 elif k == pygame.K_a:
-                    cur = self.target.vel.normalized()
-                    cur.x -= 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.y -= 0.5
+                    self.target.speed = self.target.vel.norm()
                 elif k == pygame.K_d:
-                    cur = self.target.vel.normalized()
-                    cur.x += 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.y += 0.5
+                    self.target.speed = self.target.vel.norm()
 
-                # W/S: Forward/Backward (Y)
+                # W/S: Forward(+X)/Backward(-X)
                 elif k == pygame.K_w:
-                    cur = self.target.vel.normalized()
-                    cur.y += 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.x += 0.5
+                    self.target.speed = self.target.vel.norm()
                 elif k == pygame.K_s:
-                    cur = self.target.vel.normalized()
-                    cur.y -= 1
-                    self.target_vel_dir = cur
-                    self.target.vel = self.target_vel_dir.normalized() * self.target_speed
+                    self.target.vel.x -= 0.5
+                    self.target.speed = self.target.vel.norm()
 
-                # Target speed tổng ([ / ])
+                # Target speed tổng ([ / ]) 
                 elif k == pygame.K_LEFTBRACKET:
-                    self.target_speed = self.target_speed - 0.25*TARGET_SPEED
-                    self.target_speed = max(self.target_speed, 0)
+                    self.target_speed = max(0.0, self.target_speed - 1.0)
                     self.target.speed = self.target_speed
                 elif k == pygame.K_RIGHTBRACKET:
-                    self.target_speed = self.target_speed + 0.25*TARGET_SPEED
-                    self.target_speed = min(self.target_speed, MISSILE_SPEED)
+                    self.target_speed += 1.0
                     self.target.speed = self.target_speed
 
                 # Help
                 elif k == pygame.K_h:
                     self.show_help = not self.show_help
+
+            # Mouse button events for orbit camera
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1: # Left click
+                    mx, my = event.pos
+                    # Only rotate if mouse is in the 3D area (left side)
+                    if mx < MAIN_W:
+                        self._dragging_cam = True
+                        self._last_mouse_pos = (mx, my)
+
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    self._dragging_cam = False
+
+            elif event.type == pygame.MOUSEMOTION:
+                if self._dragging_cam:
+                    mx, my = event.pos
+                    dx = mx - self._last_mouse_pos[0]
+                    dy = my - self._last_mouse_pos[1]
+                    
+                    # Sensitivity: roughly 0.5 degrees per pixel
+                    new_yaw = self.camera.yaw - dx * 0.002
+                    new_pitch = self.camera.pitch - dy * 0.002
+                    self.camera.set_angles(new_yaw, new_pitch)
+                    self._last_mouse_pos = (mx, my)
 
         return True
 
@@ -898,25 +942,26 @@ class Simulation:
     def _proj(self, v: Vector3D) -> tuple:
         return self.camera.project(v)
 
-    def _build_cached_surfaces(self):
-        """Tạo trước các surface tĩnh (lưới, ...) — chỉ gọi 1 lần khi khởi động."""
+    def _draw_grid(self):
+        """Vẽ lưới 3D động theo camera scale."""
         step = 500
-        rng  = range(-3000, 3001, step)
-        self._grid_surf = pygame.Surface((MAIN_W, HEIGHT), pygame.SRCALPHA)
+        # Tính toán lưới dựa trên camera scale hiện tại
+        limit = int(3000 / (self.camera.scale * 10))
+        limit = max(3000, min(limit, 8000))
+        rng = range(-limit, limit + 1, step)
+        
         for xi in rng:
-            p1 = self._proj(Vector3D(xi, -3000, 0))
-            p2 = self._proj(Vector3D(xi,  3000, 0))
-            pygame.draw.line(self._grid_surf, (*C_GRID, 120), p1, p2, 1)
+            p1 = self._proj(Vector3D(xi, -limit, 0))
+            p2 = self._proj(Vector3D(xi,  limit, 0))
+            pygame.draw.line(self.screen, (*C_GRID, 80), p1, p2, 1)
         for yi in rng:
-            p1 = self._proj(Vector3D(-3000, yi, 0))
-            p2 = self._proj(Vector3D( 3000, yi, 0))
-            pygame.draw.line(self._grid_surf, (*C_GRID, 120), p1, p2, 1)
+            p1 = self._proj(Vector3D(-limit, yi, 0))
+            p2 = self._proj(Vector3D( limit, yi, 0))
+            pygame.draw.line(self.screen, (*C_GRID, 80), p1, p2, 1)
+        
         p_bot = self._proj(Vector3D(0, 0,    0))
         p_top = self._proj(Vector3D(0, 0, 1500))
-        pygame.draw.line(self._grid_surf, (60, 200, 80, 80), p_bot, p_top, 1)
-
-    def _draw_grid(self):
-        self.screen.blit(self._grid_surf, (0, 0))
+        pygame.draw.line(self.screen, (60, 200, 80, 80), p_bot, p_top, 1)
 
     def _draw_trail(self, trail, color_tail: tuple, color_head: tuple,
                     width_max: int = 3):
@@ -986,6 +1031,27 @@ class Simulation:
         pygame.draw.line(self._trail_surf, (*C_LOS_LINE, 55), p0, p1, 1)
         self.screen.blit(self._trail_surf, (0, 0))
 
+    def _draw_pip(self):
+        """Vẽ điểm va chạm dự tính (PIP)."""
+        if not self.missile.active or self.missile.intercepted:
+            return
+        
+        r = (self.target.pos - self.missile.pos).norm()
+        Vc = self.missile.Vc
+        time_to_go = r / (Vc + 1.0) if Vc > 0.1 else r / (self.missile.speed + 1.0)
+        
+        # PIP = vị trí mục tiêu sau time_to_go giây (giả định vận tốc không đổi)
+        pip = self.target.pos + self.target.vel * time_to_go
+        px, py = self._proj(pip)
+        
+        # Vẽ dấu X nhỏ hoặc vòng tròn mờ
+        pygame.draw.line(self.screen, (255, 255, 255, 100), (px-5, py-5), (px+5, py+5), 1)
+        pygame.draw.line(self.screen, (255, 255, 255, 100), (px+5, py-5), (px-5, py+5), 1)
+        pygame.draw.circle(self.screen, (255, 255, 255, 50), (px, py), 10, 1)
+        
+        txt = self.font_sm.render(f"PIP ({time_to_go:.1f}s)", True, (200, 200, 200))
+        self.screen.blit(txt, (px + 10, py - 10))
+
     def _draw_intercept_flash(self):
         if self._flash_timer <= 0:
             return
@@ -1019,6 +1085,7 @@ class Simulation:
             ("── GUIDANCE ────────────",   C_TEXT_HEAD),
             (f"  Nav gain N : {self.nav_gain:7.1f}",     C_TEXT_VAL),
             (f"  Max accel  : {self.max_accel:7.1f} m/s²",C_TEXT_VAL),
+            (f"  Camera Rot : Y:{math.degrees(self.camera.yaw):.0f}° P:{math.degrees(self.camera.pitch):.0f}°", C_TEXT_VAL),
             ("",                           C_TEXT_VAL),
             ("── MISSILE ─────────────",   C_TEXT_HEAD),
             (f"  Speed      : {self.missile.speed:7.1f} m/s", C_TEXT_VAL),
@@ -1026,6 +1093,7 @@ class Simulation:
             (f"  Vel X/Y/Z  : {mv.x:+6.1f}/{mv.y:+6.1f}/{mv.z:+6.1f}", C_TEXT_VAL),
             (f"  |Vel|      : {mv.norm():7.1f} m/s", C_TEXT_VAL),
             (f"  Accel |a|  : {self.missile._accel.norm():7.1f} m/s²", C_TEXT_VAL),
+            (f"  G-Load     : {self.missile.g_load:7.2f} G", (255, 100, 100) if self.missile.g_load > 12 else C_TEXT_VAL),
             ("",                           C_TEXT_VAL),
             ("── TARGET ──────────────",   C_TEXT_HEAD),
             (f"  Mode       : {self.target.mode.name[:11]:11s}", C_TEXT_VAL),
@@ -1039,6 +1107,7 @@ class Simulation:
              (255, 120, 80) if dist < 200 else C_TEXT_VAL),
             (f"  Closing Vc : {Vc:7.1f} m/s",
              C_TEXT_VAL if Vc > 0 else C_TEXT_WARN),
+            (f"  Time to Go : {dist/(Vc + 1e-6):7.2f} s", C_TEXT_VAL),
         ]
 
         x, y = 12, 12
@@ -1077,32 +1146,22 @@ class Simulation:
             "ESC         Thoát",
             "",
             "↑ / ↓       Tăng / Giảm time scale (×2 / ÷2)",
-            "            Range: 0.0625x → 8x",
+            "← / →       Scrub history",
             "",
-            "← / →       Scrub: lùi / tiến 1 frame (xem chậm)",
-            "Shift+← / → Scrub: nhảy 30 frames",
-            "Ctrl +← / → Scrub: nhảy 10 frames",
-            "            Tự động pause khi bắt đầu scrub",
-            "            Nhấn → ở cuối để thoát scrub, tiếp tục live",
+            "N / M       Tăng / Giảm hệ số N (±0.5)",
+            "+ / -       Phóng to / Thu nhỏ",
             "",
-            "N / M       Tăng / Giảm hệ số dẫn đường N (±0.5)",
-            "            Range: 1.0 → 12.0",
+            "── TARGET CONTROL (mục tiêu) ──────────",
+            "[ / ]       Tăng / Giảm Speed tổng",
+            "W / S       Tiến (+) / Lùi (-) [X]",
+            "D / A       Phải (+) / Trái (-) [Y]",
+            "E / Q       Lên  (+) / Xuống (-) [Z]",
             "",
-            "── VIEW ZOOM ─────────────────────────",
-            "+  / -      Phóng to / Thu nhỏ (10%)",
+            "1 / 2       Straight / Maneuvering",
             "",
-            "── TARGET VELOCITY ───────────────────",
-            "[ / ]       Giảm / Tăng tốc độ Target tổng (±25 m/s)",
-            "A  / D      Điều chỉnh hướng Vx Target (-/+ 0.2)",
-            "W  / S      Điều chỉnh hướng Vy Target (-/+ 0.2)",
-            "Q  / E      Điều chỉnh hướng Vz Target (-/+ 0.1)",
-            "",
-            "1           Chế độ mục tiêu: Bay thẳng",
-            "2           Chế độ mục tiêu: Cơ động (evasive)",
-            "",
+            "── VIEW (góc nhìn) ────────────────────",
+            "Chuột trái  Xoay Camera 3D",
             "═══════════════════════════════════════",
-            "",
-            "         Nhấn H để đóng",
         ]
 
         x = WIDTH // 2 - 260
@@ -1178,6 +1237,7 @@ class Simulation:
         self._draw_trail(self.missile.trail,
                          C_MISSILE_TRAIL_TAIL, C_MISSILE_TRAIL_HEAD, width_max=4)
         self._draw_los_line()
+        self._draw_pip()
 
         arrow_scale = 250
         self._draw_arrow(self.target.pos, self.target.vel,

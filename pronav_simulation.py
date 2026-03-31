@@ -9,9 +9,9 @@
   SPACE          — Tạm dừng / Tiếp tục
   R              — Reset mô phỏng
   ↑ / ↓          — Tăng / Giảm time scale (tua nhanh / chậm)
-  ← / →          — Scrub: lùi / tiến 1 frame (xem chậm)
-  Shift+← / →   — Scrub: lùi / tiến 30 frames (nhảy nhanh)
-  Ctrl +← / →   — Scrub: lùi / tiến 10 frames
+  ← / →          — Scrub: lùi / tiến SCRUB_STEP frame (xem chậm)
+  Shift+← / →   — Scrub: lùi / tiến SCRUB_STEP_FAST frames (nhảy nhanh)
+  Ctrl +← / →   — Scrub: lùi / tiến SCRUB_STEP_MED frames
   N / M          — Tăng / Giảm hệ số dẫn đường N
   1 / 2          — Đổi chế độ di chuyển mục tiêu (thẳng / cơ động)
   +/- (KP)       — Tăng / Giảm vận tốc missile
@@ -40,8 +40,8 @@ from typing import List
 # ── Tốc độ & gia tốc ───────────────────────────────────────────────
 TARGET_SPEED = 2      # m/s  (0 = target đứng yên)
 TARGET_ACCEL_MAX = TARGET_SPEED * 2      # m/s² (giới hạn gia tốc cơ động)
-MISSILE_SPEED = 15     # m/s
-MISSILE_ACCEL_MAX = 2     # m/s²
+MISSILE_SPEED = 150     # m/s
+MISSILE_ACCEL_MAX = 15     # m/s²
 
 # ── Khoảng cách bắt đầu (thông tin, không điều chỉnh vị trí) ─────────
 DISTANCE_TO_TARGET_X = 2000   # m
@@ -109,9 +109,9 @@ C_PLANE_YZ      = (220, 160,  50)   # màu khung YZ
 TRAIL_LEN        = 6000   # số điểm lưu quỹ đạo (tăng lên để trail dài hơn)
 HISTORY_MAX      = 1800  # số snapshot tối đa (~30s ở 60fps)
 SNAPSHOT_EVERY   = 2     # lưu snapshot mỗi N frame (giảm xuống để scrub mịn hơn)
-SCRUB_STEP       = 1     # ← → : 1 frame (xem từng khung hình)
-SCRUB_STEP_MED   = 10    # Ctrl+← → : 10 frames
-SCRUB_STEP_FAST  = 30    # Shift+← → : 30 frames (nhảy nhanh)
+SCRUB_STEP       = 10     # ← → : 1 frame (xem từng khung hình)
+SCRUB_STEP_MED   = 50    # Ctrl+← → : 10 frames
+SCRUB_STEP_FAST  = 100    # Shift+← → : 30 frames (nhảy nhanh)
 
 # Trail gradient colours (tail → head)
 C_TARGET_TRAIL_TAIL  = (10,  50, 120)   # đầu cũ — xanh đậm
@@ -787,14 +787,14 @@ class Simulation:
 
                 # Time scale
                 elif k == pygame.K_UP:
-                    self.time_scale = min(self.time_scale * 2.0, 8.0)
+                    self.time_scale = min(self.time_scale * 2.0, 32.0)
                 elif k == pygame.K_DOWN:
-                    self.time_scale = max(self.time_scale * 0.5, 0.0625)
+                    self.time_scale = max(self.time_scale * 0.5, 0.5)
 
                 # Scrub history ← →
-                # ← / →          : 1 frame (xem chậm từng khung hình)
-                # Shift+← / →   : 30 frames (nhảy nhanh)
-                # Ctrl +← / →   : 10 frames
+                # ← / →          : SCRUB_STEP frame (xem chậm từng khung hình)
+                # Shift+← / →   : SCRUB_STEP_FAST frames (nhảy nhanh)
+                # Ctrl +← / →   : SCRUB_STEP_MED frames
                 elif k == pygame.K_LEFT:
                     mods = pygame.key.get_mods()
                     if mods & pygame.KMOD_SHIFT:
@@ -1121,8 +1121,8 @@ class Simulation:
             "SPACE:Pause  R:Reset  H:Help  ESC:Quit",
             "←→:Scrub 1frame  Shift+←→:30f  Ctrl+←→:10f",
             "↑↓:TimeScale  +/-:Zoom View  [/]:TargetSpd",
-            "N/M:NavGain  A/D:Target Vx  W/S:Target Vy",
-            "Q/E:Target Vz  1:Straight  2:Maneuvering",
+            "N/M:NavGain   1:Straight  2:Maneuvering",
+            "A/D:Target Vx  W/S:Target Vy  Q/E:Target Vz",
         ]
         y = HEIGHT - 14 * len(hints) - 6 - 22  # nhường chỗ cho scrubber
         for h in hints:
